@@ -23,7 +23,7 @@ réplicas sirven la misma versión.
 
 ## Correrlo en local
 
-Los datos no están en el repo: copiá `Export_seco_anonimizado.xlsx` y `productos.xlsx` a `datos/` en la raíz.
+Los datos no se suben a este repo: están en la carpeta `datos/` del repo del Trabajo Final del Curso 1 (github.com/emgsam/TP-introduccion-a-la-ia). Copiá `Export_seco_anonimizado.xlsx` y `productos.xlsx` a `datos/` en la raíz de este repo (está en `.gitignore`).
 
 Con Docker Compose (Postgres + trainer + API):
 
