@@ -45,6 +45,28 @@ jobs:
         working-directory: ${{ matrix.service }}
         run: uv run --python 3.12 --with-requirements requirements.txt --with pytest --with httpx pytest -q
 
+  # Trabajo final: tests del trainer y la API, y build de sus dos imágenes.
+  # (Sin smoke test todavía: la API necesita un modelo en MODELS_URI para dar /healthz 200.)
+  ventas-ia:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ventas-ia
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: pytest ventas-ia
+        run: uv run --python 3.12 --with-requirements requirements-api.txt --with pytest --with httpx pytest -q
+
+      - name: docker build trainer y api
+        run: |
+          docker build -f Dockerfile.trainer --build-arg GIT_SHA="$GITHUB_SHA" -t "ventas-trainer:$GITHUB_SHA" .
+          docker build -f Dockerfile.api --build-arg GIT_SHA="$GITHUB_SHA" -t "ventas-api:$GITHUB_SHA" .
+
   build:
     needs: test
     runs-on: ubuntu-latest
