@@ -50,3 +50,22 @@ def test_versiones_y_activacion(cliente):
     assert cliente.post("/versions/v1/activate").json()["activa"] == "v1"
     assert cliente.get("/healthz").json()["version"] == "v1"
     assert cliente.get("/versions").json()["activa"] == "v1"
+
+
+def test_sugerencias_traen_id_y_seguimiento_valida(cliente, monkeypatch):
+    import api
+    cuerpo = cliente.post("/predict", json={"productos": ["Placa", "Montante"]}).json()
+    sid = cuerpo["sugerencias"][0]["id"]
+    # sin base de datos el seguimiento no se puede guardar
+    r = cliente.post(f"/sugerencias/{sid}/seguimiento", json={"resultado": "compro"})
+    assert r.status_code == 503
+    assert cliente.post("/sugerencias/no-es-uuid/seguimiento", json={"resultado": "compro"}).status_code == 422
+    assert cliente.post(f"/sugerencias/{sid}/seguimiento", json={"resultado": "quizas"}).status_code == 422
+
+    guardados = []
+    monkeypatch.setattr(api.registro, "registrar_seguimiento",
+                        lambda *a: guardados.append(a) or True)
+    r = cliente.post(f"/sugerencias/{sid}/seguimiento",
+                     json={"resultado": "ya_lo_tenia", "vendedor": "ana"})
+    assert r.status_code == 201
+    assert guardados == [(sid, "ya_lo_tenia", "ana", None)]

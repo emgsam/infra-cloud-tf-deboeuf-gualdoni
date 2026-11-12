@@ -6,11 +6,11 @@ convertido en dos servicios que comparten el paquete `ventas/`:
 | Pieza | Imagen | Qué hace |
 |---|---|---|
 | `train.py` | `Dockerfile.trainer` | Ciclo de vida: entrenar → evaluar → versionar → guardar → registrar. Corre como Job |
-| `api.py` | `Dockerfile.api` | FastAPI: `/predict`, `/healthz`, `/metrics`, `/versions`, `/versions/{v}/activate` |
+| `api.py` | `Dockerfile.api` | FastAPI: `/predict`, `/healthz`, `/metrics`, `/versions`, `/versions/{v}/activate`, `/sugerencias/{id}/seguimiento` |
 | `ventas/datos.py` | | Carga el extracto y arma la tabla de compras cliente-mes (Etapa 1 de la notebook) |
 | `ventas/modelo.py` | | Random Forest por accesorio, regresión logística, línea base, regla de activación, `sugerir()` |
 | `ventas/almacen.py` | | Lee y escribe en una carpeta local o en `gs://` |
-| `ventas/registro.py` | | Tablas de Postgres y escritura asíncrona desde la API |
+| `ventas/registro.py` | | Tablas de Postgres (con `seguimientos` y la vista `conversion_por_accesorio`) y escritura asíncrona |
 
 ## Cómo se versiona
 
@@ -65,6 +65,17 @@ curl -s -X POST localhost:8000/predict -H 'content-type: application/json' -d '{
                  {"accesorio": "Cantonera metálica", "prob": 0.716, "prioridad": "Media"}],
  "latencia_ms": 52.8}
 ```
+
+Cada sugerencia trae un `id`. Cuando el vendedor llama al cliente, registra el resultado
+(`compro`, `no_le_interesa`, `ya_lo_tenia` o `no_contactado`):
+
+```bash
+curl -s -X POST localhost:8000/sugerencias/<id>/seguimiento -H 'content-type: application/json' \
+  -d '{"resultado": "compro", "vendedor": "ana"}'
+```
+
+La vista `conversion_por_accesorio` cruza sugerencias y seguimientos y da la tasa de conversión por versión
+y accesorio: con el tiempo muestra si las ventas perdidas que marcó el modelo eran reales.
 
 También acepta `"articulos": [{"codigo": "DUR-319093", "cantidad": 10}]` con los códigos del ERP.
 

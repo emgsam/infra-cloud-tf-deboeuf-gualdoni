@@ -1,6 +1,7 @@
 """Registro en PostgreSQL (sección 2.4 de la consigna).
 
-Cuatro tablas: requests, predictions, model_versions y trainings. Si no hay
+Cinco tablas: requests, predictions, model_versions, trainings y seguimientos
+(qué pasó cuando el vendedor llamó al cliente por una sugerencia). Si no hay
 DATABASE_URL (tests, o correr sin base) todo es un no-op, así el servicio sigue
 funcionando.
 
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 CREATE TABLE IF NOT EXISTS predictions (
     id          BIGSERIAL PRIMARY KEY,
+    sugerencia_id UUID UNIQUE,  -- el id que devuelve /predict, para el seguimiento
     request_id  BIGINT REFERENCES requests(id),
     cliente     BIGINT,
     accesorio   TEXT NOT NULL,
@@ -60,7 +62,40 @@ CREATE TABLE IF NOT EXISTS trainings (
     motivo          TEXT,
     metadata        JSONB
 );
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS sugerencia_id UUID UNIQUE;
+-- Resultado de la llamada del vendedor. Sin clave foránea a predictions porque la
+-- sugerencia se inserta de forma asíncrona y el seguimiento podría llegar antes.
+CREATE TABLE IF NOT EXISTS seguimientos (
+    id            BIGSERIAL PRIMARY KEY,
+    sugerencia_id UUID NOT NULL,
+    ts            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resultado     TEXT NOT NULL CHECK (resultado IN
+                  ('compro', 'no_le_interesa', 'ya_lo_tenia', 'no_contactado')),
+    vendedor      TEXT,
+    nota          TEXT
+);
 CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
+CREATE INDEX IF NOT EXISTS seguimientos_sugerencia ON seguimientos (sugerencia_id);
+-- Conversión por versión y accesorio: con el tiempo dice si las ventas perdidas
+-- que marcó el modelo eran reales (el último seguimiento de cada sugerencia cuenta).
+CREATE OR REPLACE VIEW conversion_por_accesorio AS
+WITH ultimo AS (
+    SELECT DISTINCT ON (sugerencia_id) sugerencia_id, resultado
+    FROM seguimientos ORDER BY sugerencia_id, ts DESC
+)
+SELECT r.version, p.accesorio, p.prioridad,
+       count(*)                                              AS sugerencias,
+       count(u.resultado)                                    AS con_seguimiento,
+       count(*) FILTER (WHERE u.resultado = 'compro')        AS compraron,
+       count(*) FILTER (WHERE u.resultado = 'no_le_interesa') AS no_interesa,
+       count(*) FILTER (WHERE u.resultado = 'ya_lo_tenia')   AS ya_lo_tenia,
+       round(count(*) FILTER (WHERE u.resultado = 'compro')::numeric
+             / nullif(count(u.resultado) FILTER (WHERE u.resultado <> 'no_contactado'), 0), 3)
+                                                             AS tasa_conversion
+FROM predictions p
+JOIN requests r ON r.id = p.request_id
+LEFT JOIN ultimo u ON u.sugerencia_id = p.sugerencia_id
+GROUP BY r.version, p.accesorio, p.prioridad;
 """
 
 
@@ -109,6 +144,20 @@ def marcar_activa(version: str) -> None:
         conn.execute("UPDATE model_versions SET activa = (version = %s)", (version,))
 
 
+def registrar_seguimiento(sugerencia_id: str, resultado: str, vendedor: str | None,
+                          nota: str | None) -> bool:
+    """Guarda qué pasó con una sugerencia. Es síncrono: lo usa una persona, no la carga."""
+    conn = _conectar()
+    if conn is None:
+        return False
+    with conn:
+        conn.execute(
+            """INSERT INTO seguimientos (sugerencia_id, resultado, vendedor, nota)
+               VALUES (%s, %s, %s, %s)""",
+            (sugerencia_id, resultado, vendedor, nota))
+    return True
+
+
 # ---------------------------------------------------------------------- API
 class EscritorAsincrono:
     """Hilo que vacía una cola de peticiones hacia Postgres."""
@@ -147,9 +196,11 @@ class EscritorAsincrono:
                         req).fetchone()
                     for s in sugs:
                         conn.execute(
-                            """INSERT INTO predictions (request_id, cliente, accesorio, prob, prioridad)
-                               VALUES (%s, %s, %s, %s, %s)""",
-                            (fila[0], req["cliente"], s["accesorio"], s["prob"], s["prioridad"]))
+                            """INSERT INTO predictions (sugerencia_id, request_id, cliente, accesorio,
+                                                      prob, prioridad)
+                               VALUES (%s, %s, %s, %s, %s, %s)""",
+                            (s["id"], fila[0], req["cliente"], s["accesorio"], s["prob"],
+                             s["prioridad"]))
             except Exception as exc:  # la base caída no tiene que tirar la API
                 print(f"db-writer: {exc}", flush=True)
                 self.al_descartar()

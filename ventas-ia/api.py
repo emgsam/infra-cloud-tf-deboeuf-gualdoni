@@ -6,6 +6,7 @@ Endpoints:
   GET  /metrics                  formato Prometheus
   GET  /versions                 versiones guardadas, con sus métricas y cuál está activa
   POST /versions/{v}/activate    activa una versión y la recarga en caliente
+  POST /sugerencias/{id}/seguimiento  qué pasó cuando el vendedor llamó al cliente
 
 El modelo NO está en la imagen: al arrancar se lee <MODELS_URI>/active.json y se
 carga esa versión desde Cloud Storage (o desde una carpeta, en local). Cada
@@ -21,9 +22,10 @@ import os
 import socket
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import joblib
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -42,6 +44,7 @@ LATENCIA = Histogram("ventas_request_seconds", "Latencia por endpoint", ["endpoi
                      buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
 SUGERENCIAS = Counter("ventas_sugerencias_total", "Sugerencias devueltas por prioridad", ["prioridad"])
 VERSION_ACTIVA = Gauge("ventas_modelo_info", "Versión cargada (valor 1)", ["version"])
+SEGUIMIENTOS = Counter("ventas_seguimientos_total", "Resultados de las llamadas", ["resultado"])
 DESCARTES = Counter("ventas_db_descartes_total", "Filas que no se pudieron registrar en la base")
 
 escritor = registro.EscritorAsincrono(al_descartar=DESCARTES.inc)
@@ -142,7 +145,8 @@ class PedidoPrediccion(BaseModel):
 def index() -> dict[str, Any]:
     return {"servicio": "ventas-perdidas", "version_activa": _estado["version"],
             "endpoints": ["POST /predict", "GET /healthz", "GET /metrics", "GET /versions",
-                          "POST /versions/{v}/activate", "GET /docs"]}
+                          "POST /versions/{v}/activate",
+                          "POST /sugerencias/{id}/seguimiento", "GET /docs"]}
 
 
 @app.get("/healthz")
@@ -176,6 +180,7 @@ def predict(pedido: PedidoPrediccion) -> dict[str, Any]:
 
     sugerencias = sugerir(bundle, reconocidos) if reconocidos else []
     for s in sugerencias:
+        s["id"] = str(uuid.uuid4())  # para registrar después el resultado de la llamada
         SUGERENCIAS.labels(s["prioridad"]).inc()
     latencia_ms = round((time.perf_counter() - inicio) * 1000, 2)
 
@@ -186,6 +191,22 @@ def predict(pedido: PedidoPrediccion) -> dict[str, Any]:
     return {"version": version, "cliente": pedido.cliente, "mes": pedido.mes,
             "productos_reconocidos": sorted(reconocidos), "no_reconocidos": desconocidos,
             "sugerencias": sugerencias, "latencia_ms": latencia_ms}
+
+
+class Seguimiento(BaseModel):
+    resultado: Literal["compro", "no_le_interesa", "ya_lo_tenia", "no_contactado"]
+    vendedor: str | None = Field(default=None, max_length=100)
+    nota: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/sugerencias/{sugerencia_id}/seguimiento", status_code=201)
+def seguimiento(sugerencia_id: uuid.UUID, cuerpo: Seguimiento) -> dict[str, Any]:
+    """El vendedor registra qué pasó con una sugerencia (ver la vista conversion_por_accesorio)."""
+    if not registro.registrar_seguimiento(str(sugerencia_id), cuerpo.resultado,
+                                          cuerpo.vendedor, cuerpo.nota):
+        raise HTTPException(503, "no hay base de datos configurada (DATABASE_URL)")
+    SEGUIMIENTOS.labels(cuerpo.resultado).inc()
+    return {"sugerencia_id": str(sugerencia_id), "resultado": cuerpo.resultado}
 
 
 @app.get("/versions")
