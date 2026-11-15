@@ -1,6 +1,6 @@
 # ventas-ia · servicio de IA de ventas perdidas
 
-Trabajo Final del Curso 2. Es el modelo del Trabajo Final del Curso 1 (Random Forest por accesorio)
+Trabajo Final del Curso 2 ([diagramas de arquitectura](../docs/arquitectura.md)). Es el modelo del Trabajo Final del Curso 1 (Random Forest por accesorio)
 convertido en dos servicios que comparten el paquete `ventas/`:
 
 | Pieza | Imagen | Qué hace |
